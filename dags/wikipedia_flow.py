@@ -2,7 +2,7 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime
-from pipelines.wikipedia_pipeline import get_wikipedia_page
+from pipelines.wikipedia_pipeline import extract_wikipedia_data
 
 # Define the Airflow DAG for the Wikipedia data extraction workflow
 dag = DAG(
@@ -20,7 +20,7 @@ dag = DAG(
 # We assign the task to the Wikipedia Extraction DAG
 extract_data_from_wikipedia = PythonOperator(
     task_id = 'extract_data_from_wikipedia',
-    python_callable = get_wikipedia_page,
+    python_callable = extract_wikipedia_data,
     op_kwargs = {
         'url': 'https://en.wikipedia.org/wiki/List_of_association_football_stadiums_by_capacity'
     },
