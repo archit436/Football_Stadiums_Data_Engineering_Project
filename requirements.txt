@@ -1,0 +1,2 @@
+# Add Geopy for geolocation
+geopy==2.2.0

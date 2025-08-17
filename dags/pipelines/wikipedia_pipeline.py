@@ -2,9 +2,12 @@
 This file contains helper functions for the tasks that are a part of the Apache Airflow DAG for wikipedia data extraction.
 """
 # Setup
+import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import json
+from geopy.geocoders import Nominatim
 
 def get_wikipedia_page(url: str) -> str:
     """
@@ -40,9 +43,29 @@ def get_wikipedia_data(html: str) -> dict:
 
     return table_rows
 
-def extract_wikipedia_data(**kwargs) -> list:
+def clean_text(text: str) -> str:
+    """
+    Helper function to clean the text obtained from scraping the wikipedia page.
+    """
+    # Remove leading and trailing whitespace
+    text = text.strip()
+    # Remove the character in stadium names
+    if text.find(' ♦'):
+        text = text.split(' ♦')[0]
+    # Remove citations from capacity.
+    if text.find('[') != -1:
+        text = text.split('[')[0]
+    # Remove 'formerly' from capacity
+    if text.find(' (formerly)') != -1:
+        text = text.split(' (formerly)')[0]
+    # Remove any newline characters.
+    text = text.replace('\n', ' ')
+    return text
+
+def extract_wikipedia_data(**kwargs) -> str:
     """
     Cumulative function that extracts data from wikipedia given the url.
+    The output is a JSON string stored in a task instance on Airflow, to be used by downstream tasks.
     """
     # Extract the URL and run the functions above.
     url = kwargs['url']
@@ -55,20 +78,84 @@ def extract_wikipedia_data(**kwargs) -> list:
         # We extract all the table data items for this row.
         tds = rows[i].find_all('td')
         # Extract the values based on HTML code of the page.
+        # Clean the text for each value.
         values = {
             'rank': i,
-            'stadium': tds[0].text,
-            'capacity': tds[1].text,
-            'region': tds[2].text,
-            'country': tds[3].text,
-            'city': tds[4].text,
-            'images': tds[5].find('img').get('src').split("//")[1] if tds[5].find('img') else "NO_IMAGE",
-            'home_team': tds[6].text,      
+            'stadium': clean_text(tds[0].text),
+            'capacity': clean_text(tds[1].text).replace(',', ''),
+            'region': clean_text(tds[2].text),
+            'country': clean_text(tds[3].text),
+            'city': clean_text(tds[4].text),
+            'images': 'https://' + tds[5].find('img').get('src').split("//")[1] if tds[5].find('img') else "NO_IMAGE",
+            'home_team': clean_text(tds[6].text),
         }
         # Add the values to the data list.
         data.append(values)
     
-    # Put the data into a dataframe and then csv.
-    data_df = pd.DataFrame(data)
-    data_df.to_csv('/opt/airflow/data/output.csv', index=False)
-    return data
+    # Convert the data into a JSON string and push to the inter-task interface of Airflow.
+    json_rows = json.dumps(data)
+    kwargs['ti'].xcom_push(key='rows', value=json_rows)
+    return "OK"
+
+def get_lat_long(stadium, country, cache = {}) -> tuple:
+    """
+    Helper function to get latitude and longitude for a given stadium and country.
+    This would be used in the data transformation function.
+    """
+    print(f"Getting lat/long for {stadium}, {country}")
+
+    # Load the cache if it exists.
+    try:
+        with open('geocache.json', 'r') as f:
+            cache = json.load(f)
+    except FileNotFoundError:
+        cache = {}
+
+    # Check cache for efficiency
+    if stadium in cache:
+        return cache[stadium]
+
+    # If not found in cache, make a request to the geolocation API.
+    geolocator = Nominatim(user_agent='FootballStadiumsDataPipeline/archtibhargava436@gmail.com', timeout=5)
+    location = geolocator.geocode(f"{stadium}, {country}")
+    time.sleep(1)  # Wait 1 second between requests.
+
+    # In case a valid response is received.
+    if location:
+        cache[stadium] = (location.latitude, location.longitude)
+        return location.latitude, location.longitude
+    
+    # In case no valid response is recieved.
+    cache[stadium] = None
+    
+    # Save the cache to a file for future use.
+    with open('geocache.json', 'w') as f:
+        json.dump(cache, f)
+
+    return None
+
+def transform_wikipedia_data(**kwargs) -> str:
+    """
+    Transform the extracted Wikipedia data into a suitable format.
+    """
+    # Get the data from the previous task and serialize it.
+    json_rows = kwargs['ti'].xcom_pull(key='rows', task_ids='extract_data_from_wikipedia')
+    data = json.loads(json_rows)
+
+    # Convert the data into a pandas DataFrame
+    stadiums_df = pd.DataFrame(data)
+
+    # Start by replacing the "NO_IMAGE" with wikipedia stock for no images.
+    NO_IMAGE = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ac/No_image_available.svg/480px-No_image_available.svg.png"
+    stadiums_df['images'] = stadiums_df['images'].apply(lambda x: x if x not in ["NO_IMAGE", "", None] else NO_IMAGE)
+
+    # Next, we enrich the data with latitude and longitude values.
+    stadiums_df['lat_long'] = stadiums_df.apply(lambda x: get_lat_long(x['stadium'], x['country']), axis=1)
+
+    # Push to Xcom to be used by downstream tasks.
+    kwargs['ti'].xcom_push(key='rows', value=stadiums_df.to_json())
+
+    # Also save as csv file for debugging purposes.
+    stadiums_df.to_csv('data/output.csv', index=False)
+
+    return "OK"
