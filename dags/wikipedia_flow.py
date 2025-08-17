@@ -4,6 +4,7 @@ from airflow.operators.python import PythonOperator
 from datetime import datetime
 from pipelines.wikipedia_pipeline import extract_wikipedia_data
 from pipelines.wikipedia_pipeline import transform_wikipedia_data
+from pipelines.wikipedia_pipeline import write_wikipedia_data
 
 # Define the Airflow DAG for the Wikipedia data extraction workflow
 dag = DAG(
@@ -39,7 +40,13 @@ transform_wikipedia_data = PythonOperator(
 )
 
 # Writing
+# Define the writing task using PythonOperator
+# This task will call the write_wikipedia_data function to write the transformed data to a file
+write_wikipedia_data = PythonOperator(
+    task_id = 'write_wikipedia_data',
+    python_callable = write_wikipedia_data,
+    dag = dag
+)
 
-
-extract_data_from_wikipedia >> transform_wikipedia_data
-
+# Define the flow of the DAG in terms of the different tasks.
+extract_data_from_wikipedia >> transform_wikipedia_data >> write_wikipedia_data
