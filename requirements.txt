@@ -1,2 +1,4 @@
 # Add Geopy for geolocation
 geopy==2.2.0
+# Add Azure Data Lake File System (ADLFS) for Azure integration
+adlfs

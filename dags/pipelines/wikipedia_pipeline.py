@@ -9,6 +9,7 @@ import pandas as pd
 import json
 from geopy.geocoders import Nominatim
 from datetime import datetime
+from airflow.hooks.base import BaseHook
 
 def get_wikipedia_page(url: str) -> str:
     """
@@ -173,7 +174,7 @@ def transform_wikipedia_data(**kwargs) -> str:
 
 def write_wikipedia_data(**kwargs) -> str:
     """
-    Write the transformed Wikipedia data to a file.
+    Write the transformed Wikipedia data to Azure Storage.
     The input will be from Xcom from the transformation task.
 
     """
@@ -184,10 +185,21 @@ def write_wikipedia_data(**kwargs) -> str:
     # Convert to a Data Frame
     data_df = pd.DataFrame(data)
 
-    # Create a file name
-    file_name = ('stadiums_data_cleaned.csv')
+    # Define a file name with date and time stamp (UTC time)
+    file_name = f"stadiums_data_cleaned_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-    # Output into a csv file.
-    data_df.to_csv('data/' + file_name, index=False)
+    # Output into a csv file for debugging purposes.
+    data_df.to_csv(f'data/{file_name}', index=False)
+
+    # Output to Azure Storage
+    # Start by retreiving credentials from Airflow Connections.
+    conn = BaseHook.get_connection('my_adls_conn')
+    account_name = conn.extra_dejson.get('account_name')
+    account_key = conn.extra_dejson.get('account_key')
+    # Output to Azure Storage in CSV format.
+    data_df.to_csv(f'abfs://football-stadiums-data-container@{account_name}.dfs.core.windows.net/data/{file_name}', 
+                   storage_options={
+                       "account_key": account_key
+                    })
 
     return "OK"
