@@ -1,0 +1,2 @@
+# We don't want to push the logs folder to the repo, as it may contain secrets.
+logs/
