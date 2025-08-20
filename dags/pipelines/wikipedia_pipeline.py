@@ -104,13 +104,14 @@ def extract_wikipedia_data(**kwargs) -> str:
 
     return "OK"
 
-def get_lat_long(stadium, country) -> tuple:
+def get_lat_long(stadium, city, country) -> tuple:
     """
     Helper function to get latitude and longitude for a given stadium and country.
     This would be used in the data transformation function.
     Uses a persistent cache stored in the 'data/geocache.json' file.
+    Defaults to city's location in case the stadium location is not found.
     """
-    print(f"Getting lat/long for {stadium}, {country}")
+    print(f"Getting lat/long for {stadium}, {city}, {country}")
 
     cache_file = 'data/geocache.json'
 
@@ -127,14 +128,16 @@ def get_lat_long(stadium, country) -> tuple:
 
     # If not found in cache, make a request to the geolocation API.
     geolocator = Nominatim(user_agent='FootballStadiumsDataPipeline/archtibhargava436@gmail.com', timeout=5)
-    location = geolocator.geocode(f"{stadium}, {country}")
+    stadium_location = geolocator.geocode(f"{stadium}, {country}")
     time.sleep(1)  # Wait 1 second between requests.
 
-    # In case a valid response is received.
-    if location:
-        cache[stadium] = (location.latitude, location.longitude)
+    # If a valid response is received, then we use the location of the stadium.
+    if stadium_location:
+        cache[stadium] = (stadium_location.latitude, stadium_location.longitude)
+    # Otherwise, we retrieve and use the location of the city.
     else:
-        cache[stadium] = None
+        city_location = geolocator.geocode(f"{city}, {country}")
+        cache[stadium] = (city_location.latitude, city_location.longitude)
 
     # Save the cache to a file for future use.
     with open(cache_file, 'w') as f:
@@ -162,7 +165,12 @@ def transform_wikipedia_data(**kwargs) -> str:
     stadiums_df['capacity'] = stadiums_df['capacity'].astype(int)
 
     # Next, we enrich the data with latitude and longitude values.
-    stadiums_df['lat_long'] = stadiums_df.apply(lambda x: get_lat_long(x['stadium'], x['country']), axis=1)
+    stadiums_df['lat_long'] = stadiums_df.apply(lambda x: get_lat_long(x['stadium'], x['city'], x['country']), axis=1)
+    # Seperate the tuple value into two seperate columns.
+    stadiums_df['Latitude'] = stadiums_df['lat_long'].apply(lambda x: x[0])
+    stadiums_df['Longitude'] = stadiums_df['lat_long'].apply(lambda x: x[1])
+    # Drop the lat long column
+    stadiums_df = stadiums_df.drop(columns=['lat_long'])
 
     # Push to Xcom to be used by downstream tasks.
     kwargs['ti'].xcom_push(key='rows', value=stadiums_df.to_json())
@@ -174,7 +182,7 @@ def transform_wikipedia_data(**kwargs) -> str:
 
 def write_wikipedia_data(**kwargs) -> str:
     """
-    Write the transformed Wikipedia data to Azure Storage.
+    Write the transformed Wikipedia data to a CSV file to use with Tableau
     The input will be from Xcom from the transformation task.
 
     """
@@ -188,18 +196,7 @@ def write_wikipedia_data(**kwargs) -> str:
     # Define a file name with date and time stamp (UTC time)
     file_name = f"stadiums_data_cleaned_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-    # Output into a csv file for debugging purposes.
+    # Output into a csv file.
     data_df.to_csv(f'data/{file_name}', index=False)
-
-    # Output to Azure Storage
-    # Start by retreiving credentials from Airflow Connections.
-    conn = BaseHook.get_connection('my_adls_conn')
-    account_name = conn.extra_dejson.get('account_name')
-    account_key = conn.extra_dejson.get('account_key')
-    # Output to Azure Storage in CSV format.
-    data_df.to_csv(f'abfs://football-stadiums-data-container@{account_name}.dfs.core.windows.net/data/{file_name}', 
-                   storage_options={
-                       "account_key": account_key
-                    })
 
     return "OK"
